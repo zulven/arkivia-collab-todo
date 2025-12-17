@@ -1,0 +1,22 @@
+{
+  "name": "@arkivia/app-backend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "@arkivia/shared": "*"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.0",
+    "typescript": "^5.6.3",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.2"
+  }
+}
