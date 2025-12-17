@@ -140,3 +140,7 @@ vite.config.ts.timestamp-*
 
 # .pdf
 *.pdf
+
+# firebase service account private key
+apps/backend/*firebase-adminsdk*.json
+apps/backend/*service-account*.json

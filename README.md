@@ -77,11 +77,45 @@ Build all workspaces:
 npm run build
 ```
 
+Run the apps locally:
+
+```bash
+npm run dev:backend
+```
+
+```bash
+npm run dev:frontend
+```
+
+Notes:
+
+- The frontend dev server runs on `http://localhost:5173`.
+- The backend runs on `http://localhost:3000`.
+- During local development, the frontend proxies API requests via Vite:
+  - `GET /api/*` (frontend) -> `http://localhost:3000/*` (backend)
+  - Example: `GET /api/health` calls the backend `GET /health` endpoint.
+
 Firebase (local emulators):
 
 ```bash
 firebase emulators:start
 ```
+
+Firebase Auth (Google sign-in):
+
+- Create a Firebase **Web App** in the Firebase Console (Project settings -> Your apps).
+- Copy `apps/frontend/.env.example` to `apps/frontend/.env` and fill in:
+  - `VITE_FIREBASE_API_KEY`
+  - `VITE_FIREBASE_AUTH_DOMAIN`
+  - `VITE_FIREBASE_PROJECT_ID`
+  - `VITE_FIREBASE_APP_ID`
+- Restart the frontend dev server after changing `.env`.
+
+Backend Firebase Admin (verifying ID tokens):
+
+- Create a **service account** in Google Cloud Console (Project settings -> Service accounts) and download the JSON key.
+- Do **not** commit the JSON file to the repository.
+- Set the environment variable `GOOGLE_APPLICATION_CREDENTIALS` to the path of the JSON file before running the backend.
 
 Firebase Hosting note:
 
@@ -94,6 +128,6 @@ firebase deploy
 
 Next steps (not included in the current scaffold):
 
-- Add frontend build tooling (e.g. Vite) and dev scripts.
-- Add backend dev runner (e.g. tsx) and a minimal server entrypoint.
-- Add Firebase project configuration for local development.
+- Add Firebase Auth sign-in/sign-out UI.
+- Define TODO + user profile Firestore collections and security rules.
+- Implement TODO CRUD and assignment/collaboration.
