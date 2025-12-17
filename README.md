@@ -14,6 +14,39 @@ At a high level:
 - The backend exposes an HTTP API and is responsible for authorization and server-side validation.
 - Firestore is the system of record for application data; Firebase Auth is the identity provider.
 
+Responsibilities and rationale:
+
+- Frontend (React)
+  - Handles user interaction and presentation.
+  - Authenticates users via Firebase Auth and obtains Firebase ID tokens.
+  - Calls backend APIs and sends ID tokens in `Authorization: Bearer <token>`.
+  - Does not write directly to Firestore (simplifies authorization and validation).
+
+- Backend (Express)
+  - Verifies Firebase ID tokens using Firebase Admin SDK.
+  - Enforces authorization rules (owner/assignee permissions) and performs server-side validation.
+  - Writes application data to Firestore (authoritative access path).
+  - Provides a stable API surface independent of Firestore document shape changes.
+
+- Firestore security rules
+  - Treated as a second layer of defense.
+  - Client writes are denied; reads are restricted to the authenticated user's own/assigned documents.
+
+Realtime updates (tools considered):
+
+- Option A: Firestore client subscriptions (`onSnapshot`) for realtime reads
+  - Pro: minimal backend complexity; realtime UI updates.
+  - Con: requires careful security rules and data modeling; still keep client writes disabled.
+
+- Option B: Backend-mediated realtime (Firestore listener -> WebSockets/SSE)
+  - Pro: backend remains the single integration point; consistent authorization.
+  - Con: more infrastructure and code complexity.
+
+Current choice:
+
+- The current implementation uses backend APIs for reads/writes.
+- Realtime can be added either by polling or by implementing Option A (client `onSnapshot` for read-only updates) while keeping writes in the backend.
+
 ## Project structure
 
 Monorepo layout (npm workspaces):

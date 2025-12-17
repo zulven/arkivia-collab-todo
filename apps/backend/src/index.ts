@@ -1,7 +1,11 @@
 import express, { type Request, type Response } from "express";
 import { requireAuth } from "./authMiddleware.js";
+import { todosRouter } from "./todos.js";
+import { usersRouter } from "./users.js";
 
 const app = express();
+
+app.use(express.json());
 
 app.get("/health", (_req: Request, res: Response) => {
   res.status(200).json({ status: "ok" });
@@ -14,6 +18,10 @@ app.get("/me", requireAuth, (req: Request, res: Response) => {
     name: req.auth?.name ?? null
   });
 });
+
+app.use("/todos", requireAuth, todosRouter);
+
+app.use("/users", requireAuth, usersRouter);
 
 const port = Number(process.env.PORT ?? 3000);
 
