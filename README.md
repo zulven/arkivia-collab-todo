@@ -146,6 +146,43 @@ Notes:
   - `GET /api/*` (frontend) -> `http://localhost:3000/*` (backend)
   - Example: `GET /api/health` calls the backend `GET /health` endpoint.
 
+## Production deployment (Firebase Hosting + Cloud Run)
+
+This repo supports a simple production topology:
+
+- **Frontend**: Firebase Hosting (static SPA)
+- **Backend**: Cloud Run (Express API)
+- **Routing**: Firebase Hosting rewrites `/api/**` to the Cloud Run service
+
+Hosting domains:
+
+- `https://<project>.web.app`
+- `https://<project>.firebaseapp.com`
+
+Important (Auth):
+
+- Add both domains to Firebase Console -> Authentication -> Settings -> Authorized domains.
+
+Deploy frontend:
+
+```bash
+npm run build -w @arkivia/app-frontend
+firebase deploy --only hosting
+```
+
+Deploy backend (Cloud Run):
+
+```bash
+gcloud config set project <project-id>
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
+gcloud run deploy collab-todo-api --source . --region europe-west1 --platform managed --allow-unauthenticated
+```
+
+Notes:
+
+- Cloud Run sets `PORT` automatically; the backend listens on `process.env.PORT`.
+- The backend serves endpoints under both `/...` and `/api/...` so that Firebase Hosting can forward `/api/**` without stripping the prefix.
+
 Backend API (selected):
 
 - `GET /todos`
