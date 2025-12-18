@@ -27,7 +27,8 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     const decoded = await getAuth(app).verifyIdToken(token);
     req.auth = decoded;
     next();
-  } catch {
+  } catch (err) {
+    console.error("verifyIdToken failed", err);
     res.status(401).json({ error: "Invalid or expired token" });
   }
 }

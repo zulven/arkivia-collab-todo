@@ -45,7 +45,9 @@ Realtime updates (tools considered):
 Current choice:
 
 - The current implementation uses backend APIs for reads/writes.
-- Realtime can be added either by polling or by implementing Option A (client `onSnapshot` for read-only updates) while keeping writes in the backend.
+- Realtime is implemented for reads by using Firestore subscriptions (`onSnapshot`) as a change signal and triggering a debounced refetch from backend APIs (writes remain backend-mediated).
+  - The app uses per-document subscriptions for currently visible todos to avoid query/rules edge-cases.
+  - When the list is empty (no document IDs to subscribe to yet), the app does a small periodic backend refresh to discover newly created/assigned tasks.
 
 ## Features implemented
 
@@ -63,7 +65,9 @@ Current choice:
 - Ordering
   - Shared ordering persisted to Firestore via `position`
   - UI supports drag-and-drop reorder (persists via backend)
-- UI theme
+- Realtime reads
+  - Read-only Firestore subscriptions (`onSnapshot`) trigger refresh of the todo list
+  - UI theme
 
 ## Project structure
 
@@ -227,6 +231,6 @@ firebase deploy
 
 Next steps (not included in the current scaffold):
 
-- Add realtime updates (Firestore subscriptions or backend-mediated SSE/WebSockets)
+- Consider richer realtime architecture (e.g. backend-mediated SSE/WebSockets) if tighter control than read-only subscriptions is needed
 - Add “lists/projects” for true shared boards (so multiple users can see the exact same unassigned tasks)
 - Add richer task fields (due date, tags) and filters/views

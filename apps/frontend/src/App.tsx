@@ -34,6 +34,7 @@ import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
 import EditIcon from "@mui/icons-material/Edit";
 import FlagIcon from "@mui/icons-material/Flag";
 import SearchIcon from "@mui/icons-material/Search";
+import { doc, onSnapshot } from "firebase/firestore";
 import {
   closestCenter,
   DndContext,
@@ -47,8 +48,9 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { alpha } from "@mui/material/styles";
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useAuth } from "./auth";
+import { db } from "./firebase";
 
 type Todo = {
   id: string;
@@ -78,6 +80,7 @@ type TodosState =
 
 export default function App() {
   const [todosState, setTodosState] = useState<TodosState>({ status: "idle", todos: [] });
+  const [reloadTick, setReloadTick] = useState(0);
   const [assigningTodoId, setAssigningTodoId] = useState<string | null>(null);
   const [userQuery, setUserQuery] = useState("");
   const [userResults, setUserResults] = useState<UserSummary[]>([]);
@@ -96,6 +99,30 @@ export default function App() {
     "idle"
   );
   const { state: authState, signInWithGoogle, signOut } = useAuth();
+
+  const realtimeTodoIdsKey = useMemo(() => {
+    const ids = todosState.todos.map((t) => t.id).sort();
+    return ids.join(",");
+  }, [todosState.todos]);
+
+  const deniedRealtimeDocIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (authState.status !== "signed_in") return;
+
+    // When the list is empty we have no document ids to subscribe to.
+    // Polling the backend is the simplest way to discover newly created/assigned tasks.
+    if (realtimeTodoIdsKey.length > 0) return;
+
+    const pollMs = 5000;
+    const id = window.setInterval(() => {
+      setReloadTick((t) => t + 1);
+    }, pollMs);
+
+    return () => {
+      window.clearInterval(id);
+    };
+  }, [authState, realtimeTodoIdsKey]);
 
   useEffect(() => {
     async function syncMe() {
@@ -157,7 +184,83 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [authState]);
+  }, [authState, reloadTick]);
+
+  useEffect(() => {
+    if (authState.status !== "signed_in") return;
+
+    const refetchDebounceMs = 250;
+    const timeoutRef = { current: undefined as undefined | number };
+
+    let unsubOwned: (() => void) | null = null;
+
+    // Track first snapshot per doc to avoid a refetch loop (initial snapshot fires immediately).
+    const seenFirstSnapshot = new Set<string>();
+
+    function scheduleRefresh() {
+      if (timeoutRef.current !== undefined) {
+        window.clearTimeout(timeoutRef.current);
+      }
+      timeoutRef.current = window.setTimeout(() => {
+        setReloadTick((t) => t + 1);
+      }, refetchDebounceMs);
+    }
+
+    function onSnapshotError(label: string) {
+      return (err: unknown) => {
+        console.error(`Firestore onSnapshot error (${label})`, err);
+
+        const code =
+          typeof err === "object" && err !== null && "code" in err ? String((err as { code?: unknown }).code) : null;
+
+        if (code === "permission-denied" && label.startsWith("doc:")) {
+          const id = label.slice("doc:".length);
+          deniedRealtimeDocIdsRef.current.add(id);
+          scheduleRefresh();
+        }
+      };
+    }
+
+    // Keep per-document subscriptions for the currently visible todos.
+    // This avoids query permission edge-cases (e.g. array-contains) while still
+    // providing realtime updates for the user's current list.
+    void (async () => {
+      // Ensure an auth token is minted before Firestore subscriptions start.
+      // Without this, Firestore can transiently evaluate rules as unauthenticated.
+      await authState.user.getIdToken(true);
+
+      const ids = realtimeTodoIdsKey ? realtimeTodoIdsKey.split(",").filter(Boolean) : [];
+      const unsubs: Array<() => void> = [];
+
+      for (const id of ids) {
+        if (deniedRealtimeDocIdsRef.current.has(id)) continue;
+        unsubs.push(
+          onSnapshot(
+            doc(db, "todos", id),
+            () => {
+              if (!seenFirstSnapshot.has(id)) {
+                seenFirstSnapshot.add(id);
+                return;
+              }
+              scheduleRefresh();
+            },
+            onSnapshotError(`doc:${id}`)
+          )
+        );
+      }
+
+      unsubOwned = () => {
+        for (const fn of unsubs) fn();
+      };
+    })();
+
+    return () => {
+      unsubOwned?.();
+      if (timeoutRef.current !== undefined) {
+        window.clearTimeout(timeoutRef.current);
+      }
+    };
+  }, [authState, realtimeTodoIdsKey]);
 
   function openCreateDialog() {
     setTaskDialogMode("create");
@@ -677,11 +780,13 @@ export default function App() {
             </Tooltip>
           </Stack>
 
-          <Stack direction="row" spacing={1} justifyContent="flex-end" sx={{ py: { xs: 0.5, sm: 0 } }}>
-            <IconButton size="small" onClick={() => void deleteTodo(todo).catch(() => {})} color="error">
-              <DeleteIcon fontSize="small" />
-            </IconButton>
-          </Stack>
+          {authState.status === "signed_in" && todo.ownerUid === authState.user.uid && (
+            <Stack direction="row" spacing={1} justifyContent="flex-end" sx={{ py: { xs: 0.5, sm: 0 } }}>
+              <IconButton size="small" onClick={() => void deleteTodo(todo).catch(() => {})} color="error">
+                <DeleteIcon fontSize="small" />
+              </IconButton>
+            </Stack>
+          )}
         </Box>
       </Paper>
     );

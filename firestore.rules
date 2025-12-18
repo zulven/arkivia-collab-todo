@@ -7,7 +7,7 @@ service cloud.firestore {
     }
 
     function isOwnerOrAssignee(todo) {
-      return todo.ownerUid == request.auth.uid || request.auth.uid in todo.assigneeUids;
+      return todo.ownerUid == request.auth.uid || (todo.assigneeUids is list && request.auth.uid in todo.assigneeUids);
     }
 
     match /todos/{todoId} {
