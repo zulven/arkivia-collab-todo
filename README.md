@@ -14,6 +14,34 @@ At a high level:
 - The backend exposes an HTTP API and is responsible for authorization and server-side validation.
 - Firestore is the system of record for application data; Firebase Auth is the identity provider.
 
+```mermaid
+sequenceDiagram
+  autonumber
+  participant FE as Frontend (React)
+  participant FA as Firebase Auth/Admin SDK
+  participant BE as Backend (Express)
+  participant FS as Firestore
+
+  FE->>FA: Sign in (Google)
+  FA-->>FE: ID token
+
+  FE->>BE: POST /api/session (Authorization: Bearer <idToken>)
+  BE->>FA: verifyIdToken + createSessionCookie (Admin SDK)
+  BE-->>FE: Set-Cookie: __session=... (HttpOnly)
+
+  FE->>BE: EventSource GET /api/todos/stream (cookie sent automatically)
+  BE->>FA: verifySessionCookie
+  BE->>FS: Listen for owned/assigned todo changes (Admin SDK)
+  FS-->>BE: Snapshot updates
+  BE-->>FE: SSE event: todos_changed
+
+  FE->>BE: GET /api/todos (Authorization: Bearer <idToken>)
+  BE->>FA: verifyIdToken
+  BE->>FS: Query todos (owned + assigned)
+  FS-->>BE: Results
+  BE-->>FE: { todos: [...] }
+```
+
 Responsibilities and rationale:
 
 - Frontend (React)
@@ -45,9 +73,19 @@ Realtime updates (tools considered):
 Current choice:
 
 - The current implementation uses backend APIs for reads/writes.
-- Realtime is implemented for reads by using Firestore subscriptions (`onSnapshot`) as a change signal and triggering a debounced refetch from backend APIs (writes remain backend-mediated).
-  - The app uses per-document subscriptions for currently visible todos to avoid query/rules edge-cases.
-  - When the list is empty (no document IDs to subscribe to yet), the app does a small periodic backend refresh to discover newly created/assigned tasks.
+- Realtime reads are implemented via backend-mediated **SSE** (Server-Sent Events):
+  - The backend listens to Firestore (Admin SDK) for changes relevant to the authenticated user (owned + assigned).
+  - The frontend opens an `EventSource` stream and triggers a debounced refetch (`GET /api/todos`) when it receives `todos_changed`.
+  - SSE auth uses a Firebase **session cookie** so the stream does not require tokens in URLs:
+    - Frontend calls `POST /api/session` with a Firebase ID token.
+    - Backend mints an HttpOnly `__session` cookie via Firebase Admin `createSessionCookie`.
+    - Browser automatically sends the cookie when connecting to `GET /api/todos/stream`.
+
+Data & API contracts:
+
+- Runtime validation is implemented with **Zod** using shared schemas exported from `@arkivia/shared`.
+- The backend validates request bodies (400 on schema mismatch).
+- The frontend validates API response shapes before updating UI state.
 
 ## Features implemented
 
@@ -66,7 +104,7 @@ Current choice:
   - Shared ordering persisted to Firestore via `position`
   - UI supports drag-and-drop reorder (persists via backend)
 - Realtime reads
-  - Read-only Firestore subscriptions (`onSnapshot`) trigger refresh of the todo list
+  - Backend SSE (`GET /api/todos/stream`) triggers refresh of the todo list
   - UI theme
 
 ## Project structure
@@ -85,6 +123,11 @@ Notes:
 
 - `packages/shared` is intended to hold shared types (DTOs), validation helpers, and other utilities used by both frontend and backend.
 - `apps/` contains runnable applications.
+- The backend `todos` module is structured in a clean-ish layered way:
+  - `apps/backend/src/todos/router.ts` (routes)
+  - `apps/backend/src/todos/controller.ts` (HTTP + validation)
+  - `apps/backend/src/todos/service.ts` (business rules)
+  - `apps/backend/src/todos/repo.ts` (Firestore data access)
 
 ## Security model (draft)
 
@@ -197,6 +240,9 @@ Backend API (selected):
 - `POST /users/me` (upsert profile for search)
 - `GET /users?q=...` (search users)
 - `POST /users/lookup` (resolve UIDs -> profiles)
+- `POST /session` (create Firebase session cookie)
+- `DELETE /session` (clear session cookie)
+- `GET /todos/stream` (SSE stream for realtime invalidation)
 
 Firebase (local emulators):
 

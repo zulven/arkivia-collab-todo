@@ -34,7 +34,7 @@ import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
 import EditIcon from "@mui/icons-material/Edit";
 import FlagIcon from "@mui/icons-material/Flag";
 import SearchIcon from "@mui/icons-material/Search";
-import { doc, onSnapshot } from "firebase/firestore";
+import { TodoResponseSchema, TodosListResponseSchema } from "@arkivia/shared";
 import {
   closestCenter,
   DndContext,
@@ -50,7 +50,6 @@ import { CSS } from "@dnd-kit/utilities";
 import { alpha } from "@mui/material/styles";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useAuth } from "./auth";
-import { db } from "./firebase";
 
 type Todo = {
   id: string;
@@ -110,19 +109,59 @@ export default function App() {
   useEffect(() => {
     if (authState.status !== "signed_in") return;
 
-    // When the list is empty we have no document ids to subscribe to.
-    // Polling the backend is the simplest way to discover newly created/assigned tasks.
-    if (realtimeTodoIdsKey.length > 0) return;
+    const user = authState.user;
+    if (!user) return;
 
-    const pollMs = 5000;
-    const id = window.setInterval(() => {
-      setReloadTick((t) => t + 1);
-    }, pollMs);
+    let closed = false;
+    let es: EventSource | null = null;
+    let timeout: number | undefined;
+    const debounceMs = 250;
+
+    function scheduleRefresh() {
+      if (timeout !== undefined) {
+        window.clearTimeout(timeout);
+      }
+      timeout = window.setTimeout(() => {
+        setReloadTick((t) => t + 1);
+      }, debounceMs);
+    }
+
+    async function connect() {
+      es = new EventSource("/api/todos/stream");
+
+      es.addEventListener("todos_changed", scheduleRefresh);
+      es.addEventListener("ready", scheduleRefresh);
+      es.onerror = () => {
+        if (closed) return;
+        try {
+          es?.close();
+        } catch {
+          // ignore
+        }
+        es = null;
+        window.setTimeout(() => {
+          if (!closed) void connect();
+        }, 2000);
+      };
+    }
+
+    void connect();
 
     return () => {
-      window.clearInterval(id);
+      closed = true;
+      if (timeout !== undefined) window.clearTimeout(timeout);
+      try {
+        es?.close();
+      } catch {
+        // ignore
+      }
     };
-  }, [authState, realtimeTodoIdsKey]);
+  }, [authState]);
+
+  useEffect(() => {
+    if (authState.status !== "signed_out") return;
+    void fetch("/api/session", { method: "DELETE" });
+  }, [authState]);
 
   useEffect(() => {
     async function syncMe() {
@@ -130,6 +169,12 @@ export default function App() {
 
       try {
         const token = await authState.user.getIdToken();
+        await fetch("/api/session", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`
+          }
+        });
         await fetch("/api/users/me", {
           method: "POST",
           headers: {
@@ -161,20 +206,25 @@ export default function App() {
             authorization: `Bearer ${token}`
           }
         });
+
         if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
+          const text = await res.text();
+          throw new Error(text || `HTTP ${res.status}`);
         }
-        const data = (await res.json()) as { todos: Todo[] };
+
+        const raw = await res.json();
+        const parsed = TodosListResponseSchema.safeParse(raw);
+        if (!parsed.success) {
+          throw new Error("Invalid /api/todos response shape");
+        }
+
+        const json = parsed.data as unknown as { todos: Todo[] };
         if (!cancelled) {
-          setTodosState({ status: "ok", todos: data.todos });
+          setTodosState({ status: "ok", todos: json.todos });
         }
       } catch (err) {
         if (!cancelled) {
-          setTodosState((prev) => ({
-            status: "error",
-            todos: prev.todos,
-            message: err instanceof Error ? err.message : "Unknown error"
-          }));
+          setTodosState({ status: "error", todos: [], message: err instanceof Error ? err.message : "Unknown error" });
         }
       }
     }
@@ -187,80 +237,9 @@ export default function App() {
   }, [authState, reloadTick]);
 
   useEffect(() => {
-    if (authState.status !== "signed_in") return;
-
-    const refetchDebounceMs = 250;
-    const timeoutRef = { current: undefined as undefined | number };
-
-    let unsubOwned: (() => void) | null = null;
-
-    // Track first snapshot per doc to avoid a refetch loop (initial snapshot fires immediately).
-    const seenFirstSnapshot = new Set<string>();
-
-    function scheduleRefresh() {
-      if (timeoutRef.current !== undefined) {
-        window.clearTimeout(timeoutRef.current);
-      }
-      timeoutRef.current = window.setTimeout(() => {
-        setReloadTick((t) => t + 1);
-      }, refetchDebounceMs);
-    }
-
-    function onSnapshotError(label: string) {
-      return (err: unknown) => {
-        console.error(`Firestore onSnapshot error (${label})`, err);
-
-        const code =
-          typeof err === "object" && err !== null && "code" in err ? String((err as { code?: unknown }).code) : null;
-
-        if (code === "permission-denied" && label.startsWith("doc:")) {
-          const id = label.slice("doc:".length);
-          deniedRealtimeDocIdsRef.current.add(id);
-          scheduleRefresh();
-        }
-      };
-    }
-
-    // Keep per-document subscriptions for the currently visible todos.
-    // This avoids query permission edge-cases (e.g. array-contains) while still
-    // providing realtime updates for the user's current list.
-    void (async () => {
-      // Ensure an auth token is minted before Firestore subscriptions start.
-      // Without this, Firestore can transiently evaluate rules as unauthenticated.
-      await authState.user.getIdToken(true);
-
-      const ids = realtimeTodoIdsKey ? realtimeTodoIdsKey.split(",").filter(Boolean) : [];
-      const unsubs: Array<() => void> = [];
-
-      for (const id of ids) {
-        if (deniedRealtimeDocIdsRef.current.has(id)) continue;
-        unsubs.push(
-          onSnapshot(
-            doc(db, "todos", id),
-            () => {
-              if (!seenFirstSnapshot.has(id)) {
-                seenFirstSnapshot.add(id);
-                return;
-              }
-              scheduleRefresh();
-            },
-            onSnapshotError(`doc:${id}`)
-          )
-        );
-      }
-
-      unsubOwned = () => {
-        for (const fn of unsubs) fn();
-      };
-    })();
-
-    return () => {
-      unsubOwned?.();
-      if (timeoutRef.current !== undefined) {
-        window.clearTimeout(timeoutRef.current);
-      }
-    };
-  }, [authState, realtimeTodoIdsKey]);
+    void deniedRealtimeDocIdsRef.current;
+    void realtimeTodoIdsKey;
+  }, [realtimeTodoIdsKey]);
 
   function openCreateDialog() {
     setTaskDialogMode("create");
@@ -340,8 +319,14 @@ export default function App() {
         throw new Error(`HTTP ${res.status}`);
       }
 
-      const data = (await res.json()) as { todo: Todo };
-      setTodosState((prev) => ({ status: "ok", todos: [...prev.todos, data.todo] }));
+      const raw = await res.json();
+      const parsed = TodoResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new Error("Invalid /api/todos POST response shape");
+      }
+
+      const json = parsed.data as unknown as { todo: Todo };
+      setTodosState((prev) => ({ status: "ok", todos: [...prev.todos, json.todo] }));
       setTaskDialogOpen(false);
       return;
     }
@@ -372,10 +357,16 @@ export default function App() {
       throw new Error(`HTTP ${res.status}`);
     }
 
-    const data = (await res.json()) as { todo: Todo };
+    const raw = await res.json();
+    const parsed = TodoResponseSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new Error("Invalid /api/todos PATCH response shape");
+    }
+
+    const json = parsed.data as unknown as { todo: Todo };
     setTodosState((prev) => ({
       status: "ok",
-      todos: prev.todos.map((t) => (t.id === data.todo.id ? data.todo : t))
+      todos: prev.todos.map((t) => (t.id === json.todo.id ? json.todo : t))
     }));
     setTaskDialogOpen(false);
   }
@@ -875,7 +866,9 @@ export default function App() {
                     </Button>
                   </Stack>
 
-                  {todosState.status === "loading" && <LinearProgress />}
+                  <Box sx={{ height: 4 }}>
+                    <LinearProgress sx={{ visibility: todosState.status === "loading" ? "visible" : "hidden" }} />
+                  </Box>
                   {todosState.status === "error" && <Alert severity="error">Error: {todosState.message}</Alert>}
 
                   <Divider />
@@ -964,7 +957,11 @@ export default function App() {
                           />
 
                           <Box sx={{ mt: 1 }}>
-                            {userSearchStatus === "loading" && <LinearProgress />}
+                            <Box sx={{ height: 4 }}>
+                              <LinearProgress
+                                sx={{ visibility: userSearchStatus === "loading" ? "visible" : "hidden" }}
+                              />
+                            </Box>
                             {userSearchStatus === "error" && <Alert severity="error">Search failed</Alert>}
                             {userSearchStatus === "ok" && userResults.length === 0 && (
                               <Alert severity="info">
@@ -1154,7 +1151,11 @@ export default function App() {
                               />
 
                               <Box sx={{ mt: 1 }}>
-                                {formUserSearchStatus === "loading" && <LinearProgress />}
+                                <Box sx={{ height: 4 }}>
+                                  <LinearProgress
+                                    sx={{ visibility: formUserSearchStatus === "loading" ? "visible" : "hidden" }}
+                                  />
+                                </Box>
                                 {formUserSearchStatus === "error" && <Alert severity="error">Search failed</Alert>}
                               </Box>
 
